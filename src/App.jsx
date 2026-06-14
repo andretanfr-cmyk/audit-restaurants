@@ -7,7 +7,8 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const LOGINS = { DG: "Direction2024!", DO: "Ops2024!" };
 const LABELS = { DG: "Directeur(rice) Général(e)", DO: "Directeur Opérationnel" };
 
-const SECS = [
+// ── MODÈLE PAR DÉFAUT (utilisé seulement si aucun modèle n'existe encore en base) ──
+const DEFAULT_SECS = [
   { id:"ouv", t:"Ouverture & Mise en place", p:15, cr:[
     {id:"o1",l:"Présentoirs / devanture propres et attractifs",d:"Vitre, enseignes, ardoise, menu extérieur"},
     {id:"o2",l:"Salle prête avant le premier couvert",d:"Tables dressées, mise en place complète"},
@@ -89,18 +90,31 @@ async function dbDelete(table, id) {
   });
   if (!r.ok) throw new Error(await r.text());
 }
+async function dbUpsert(table, data, onConflict) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+    method: "POST",
+    headers: { ...headers, "Prefer": "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify(data)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 // ── UTILS ─────────────────────────────────────────────────────────────────────
-function freshSC() {
+function genId(prefix) {
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+}
+
+function freshSC(secs) {
   const s = {};
-  SECS.forEach(sec => sec.cr.forEach(c => { s[c.id] = { note: null, na: false, flag: false, cmt: "" }; }));
+  secs.forEach(sec => sec.cr.forEach(c => { s[c.id] = { note: null, na: false, flag: false, cmt: "" }; }));
   return s;
 }
 
-function calcGlobal(SC) {
+function calcGlobal(SC, secs) {
   let pts = 0, pw = 0;
   const secScores = {};
-  SECS.forEach(sec => {
+  secs.forEach(sec => {
     const active = sec.cr.filter(c => SC[c.id] && !SC[c.id].na && SC[c.id].note !== null);
     if (!active.length) { secScores[sec.id] = null; return; }
     const sum = active.reduce((a, c) => a + SC[c.id].note, 0);
@@ -204,8 +218,8 @@ function Login({ onLogin }) {
 }
 
 // ── SCORE HEADER ──────────────────────────────────────────────────────────────
-function ScoreHeader({ SC }) {
-  const { global, secScores } = calcGlobal(SC);
+function ScoreHeader({ SC, secs }) {
+  const { global, secScores } = calcGlobal(SC, secs);
   const circ = 238.76;
   const { label, bg } = verdictInfo(global);
   return (
@@ -226,12 +240,12 @@ function ScoreHeader({ SC }) {
         <span style={{ display:"inline-block", background:bg, padding:"4px 12px", borderRadius:2, fontSize:11, fontWeight:600, letterSpacing:".8px", textTransform:"uppercase" }}>{label}</span>
       </div>
       <div style={{ flex:1, minWidth:200, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"7px 16px" }}>
-        {SECS.map(sec => {
+        {secs.map(sec => {
           const pct = secScores[sec.id];
           const c = scoreColor(pct);
           return (
             <div key={sec.id} style={{ display:"flex", alignItems:"center", gap:6, fontSize:10 }}>
-              <span style={{ width:90, flexShrink:0, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:".3px" }}>{sec.t.substring(0,16)}</span>
+              <span style={{ width:90, flexShrink:0, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:".3px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sec.t}</span>
               <div style={{ flex:1, height:3, background:"rgba(255,255,255,.1)", borderRadius:2, overflow:"hidden" }}>
                 <div style={{ height:"100%", width:`${pct||0}%`, background:c, borderRadius:2 }}/>
               </div>
@@ -245,8 +259,8 @@ function ScoreHeader({ SC }) {
 }
 
 // ── AUDIT FORM ────────────────────────────────────────────────────────────────
-function AuditForm({ restoId, auditId, userName, onSaved, onBack }) {
-  const [SC, setSC] = useState(freshSC);
+function AuditForm({ restoId, auditId, userName, secs, onSaved, onBack }) {
+  const [SC, setSC] = useState(() => freshSC(secs));
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [service, setService] = useState("");
   const [crit, setCrit] = useState("");
@@ -268,8 +282,8 @@ function AuditForm({ restoId, auditId, userName, onSaved, onBack }) {
         const rows = await dbGet("audits", `id=eq.${auditId}&select=*`);
         if (!rows.length) return;
         const a = rows[0];
-        const sc = a.scores || freshSC();
-        SECS.forEach(sec => sec.cr.forEach(c => { if (!sc[c.id]) sc[c.id] = { note:null, na:false, flag:false, cmt:"" }; }));
+        const sc = a.scores || freshSC(secs);
+        secs.forEach(sec => sec.cr.forEach(c => { if (!sc[c.id]) sc[c.id] = { note:null, na:false, flag:false, cmt:"" }; }));
         setSC(sc);
         setDate(a.date || "");
         setService(a.service || "");
@@ -299,7 +313,7 @@ function AuditForm({ restoId, auditId, userName, onSaved, onBack }) {
 
   const save = async () => {
     setSaving(true);
-    const { global } = calcGlobal(SC);
+    const { global } = calcGlobal(SC, secs);
     const payload = {
       restaurant_id: restoId,
       date, service,
@@ -351,10 +365,10 @@ function AuditForm({ restoId, auditId, userName, onSaved, onBack }) {
         <div><label style={lbl}>Service</label><input type="text" value={service} onChange={e=>setService(e.target.value)} placeholder="Déj / Dîner / Continu" style={inp} /></div>
       </div>
 
-      <ScoreHeader SC={SC} />
+      <ScoreHeader SC={SC} secs={secs} />
 
       {/* Sections */}
-      {SECS.map((sec, si) => (
+      {secs.map((sec, si) => (
         <div key={sec.id} style={{ marginBottom:14, border:"1px solid #E8E8E8", borderRadius:4, overflow:"hidden" }}>
           <div onClick={()=>setCollapsed(p=>({...p,[sec.id]:!p[sec.id]}))}
             style={{ background:"#0F0F0F", color:"#F8F6F1", padding:"11px 16px", display:"flex", alignItems:"center", gap:10, cursor:"pointer", userSelect:"none" }}>
@@ -481,11 +495,131 @@ function History({ restoId, onOpen, onNew }) {
   );
 }
 
+// ── TEMPLATE EDITOR ───────────────────────────────────────────────────────────
+function TemplateEditor({ secs: initialSecs, onSave, onCancel }) {
+  const [secs, setSecs] = useState(() => JSON.parse(JSON.stringify(initialSecs)));
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+
+  const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(""), 2500); };
+
+  const totalWeight = secs.reduce((a,s)=>a+Number(s.p||0),0);
+
+  const updateSection = (idx, field, value) => {
+    setSecs(prev => prev.map((s,i)=> i===idx ? {...s, [field]: value} : s));
+  };
+  const moveSection = (idx, dir) => {
+    setSecs(prev => {
+      const arr = [...prev];
+      const j = idx+dir;
+      if (j<0 || j>=arr.length) return arr;
+      [arr[idx],arr[j]] = [arr[j],arr[idx]];
+      return arr;
+    });
+  };
+  const removeSection = (idx) => {
+    if (!window.confirm("Supprimer cette section et tous ses critères ?")) return;
+    setSecs(prev => prev.filter((_,i)=>i!==idx));
+  };
+  const addSection = () => {
+    setSecs(prev => [...prev, { id: genId("sec"), t:"Nouvelle section", p:0, cr:[] }]);
+  };
+
+  const updateCrit = (si, ci, field, value) => {
+    setSecs(prev => prev.map((s,i)=> i!==si ? s : {...s, cr: s.cr.map((c,j)=> j===ci? {...c,[field]:value}:c)}));
+  };
+  const moveCrit = (si, ci, dir) => {
+    setSecs(prev => prev.map((s,i)=>{
+      if(i!==si) return s;
+      const arr=[...s.cr]; const j=ci+dir;
+      if(j<0||j>=arr.length) return s;
+      [arr[ci],arr[j]]=[arr[j],arr[ci]];
+      return {...s, cr:arr};
+    }));
+  };
+  const removeCrit = (si,ci) => {
+    setSecs(prev => prev.map((s,i)=> i!==si? s : {...s, cr: s.cr.filter((_,j)=>j!==ci)}));
+  };
+  const addCrit = (si) => {
+    setSecs(prev => prev.map((s,i)=> i!==si? s : {...s, cr:[...s.cr, {id:genId("c"), l:"Nouveau critère", d:""}]}));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(secs);
+    } catch(e) { showToast("Erreur : " + e.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <Toast msg={toast} />
+      <div style={{ background:"#F5F3EE", border:"1px solid #E8E8E8", borderRadius:4, padding:"12px 16px", marginBottom:18, fontSize:12.5, lineHeight:1.5, color:"#444" }}>
+        Modifiez ici les sections et critères de la grille d'audit. Le <strong>poids (%)</strong> de chaque section détermine son importance dans le score global — l'ensemble doit idéalement totaliser <strong>100%</strong>.
+        {" "}Total actuel : <strong style={{ color: totalWeight===100 ? "#2A7A4B" : "#C8402A" }}>{totalWeight}%</strong>
+        {totalWeight!==100 && <span style={{ color:"#C8402A" }}> — ajustez les poids pour atteindre 100%.</span>}
+      </div>
+
+      {secs.map((sec, si) => (
+        <div key={sec.id} style={{ marginBottom:14, border:"1px solid #E8E8E8", borderRadius:4, overflow:"hidden" }}>
+          <div style={{ background:"#0F0F0F", padding:"12px 16px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            <span style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:10, color:"#C8402A", fontWeight:700, letterSpacing:1 }}>0{si+1}</span>
+            <input value={sec.t} onChange={e=>updateSection(si,"t",e.target.value)}
+              style={{ ...inp, flex:1, minWidth:160, background:"#1A1A2E", border:"1px solid #333", color:"white", fontWeight:700, fontFamily:"'Space Grotesk',sans-serif", fontSize:12, textTransform:"uppercase", letterSpacing:.4 }} />
+            <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+              <input type="number" value={sec.p} onChange={e=>updateSection(si,"p",Number(e.target.value))}
+                style={{ ...inp, width:60, background:"#1A1A2E", border:"1px solid #333", color:"white", textAlign:"center", fontSize:12 }} />
+              <span style={{ color:"#9A9A9A", fontSize:11 }}>%</span>
+            </div>
+            <button onClick={()=>moveSection(si,-1)} disabled={si===0} style={{ ...btn, background:"#333", color:"white", padding:"6px 9px", fontSize:11, opacity: si===0?.3:1 }}>↑</button>
+            <button onClick={()=>moveSection(si,1)} disabled={si===secs.length-1} style={{ ...btn, background:"#333", color:"white", padding:"6px 9px", fontSize:11, opacity: si===secs.length-1?.3:1 }}>↓</button>
+            <button onClick={()=>removeSection(si)} style={{ ...btn, background:"#C8402A", color:"white", padding:"6px 10px", fontSize:11 }}>🗑</button>
+          </div>
+
+          {sec.cr.map((cr, ci) => (
+            <div key={cr.id} style={{ display:"flex", gap:8, alignItems:"flex-start", padding:"10px 16px", borderBottom: ci<sec.cr.length-1 ? "1px solid #F0F0F0" : "none", background:"white", flexWrap:"wrap" }}>
+              <span style={{ fontSize:10, color:"#9A9A9A", paddingTop:9, minWidth:24 }}>{si+1}.{ci+1}</span>
+              <div style={{ flex:1, minWidth:200, display:"flex", flexDirection:"column", gap:6 }}>
+                <input value={cr.l} onChange={e=>updateCrit(si,ci,"l",e.target.value)} placeholder="Libellé du critère" style={{ ...inp, fontSize:12.5 }} />
+                <input value={cr.d} onChange={e=>updateCrit(si,ci,"d",e.target.value)} placeholder="Détail / précision (optionnel)" style={{ ...inp, fontSize:11, color:"#9A9A9A" }} />
+              </div>
+              <div style={{ display:"flex", gap:4, paddingTop:2 }}>
+                <button onClick={()=>moveCrit(si,ci,-1)} disabled={ci===0} style={{ ...btn, background:"#F0F0F0", color:"#555", padding:"6px 9px", fontSize:11, opacity: ci===0?.3:1 }}>↑</button>
+                <button onClick={()=>moveCrit(si,ci,1)} disabled={ci===sec.cr.length-1} style={{ ...btn, background:"#F0F0F0", color:"#555", padding:"6px 9px", fontSize:11, opacity: ci===sec.cr.length-1?.3:1 }}>↓</button>
+                <button onClick={()=>removeCrit(si,ci)} style={{ ...btn, background:"#C8402A", color:"white", padding:"6px 10px", fontSize:11 }}>🗑</button>
+              </div>
+            </div>
+          ))}
+
+          <div style={{ padding:"10px 16px", background:"#FAFAF8" }}>
+            <button onClick={()=>addCrit(si)} style={{ ...btn, background:"white", border:"1.5px dashed #E0E0E0", color:"#9A9A9A", fontSize:12, padding:"7px 14px" }}>+ Ajouter un critère</button>
+          </div>
+        </div>
+      ))}
+
+      <div style={{ display:"flex", gap:10, marginBottom:30, flexWrap:"wrap" }}>
+        <button onClick={addSection} style={{ ...btn, background:"white", border:"1.5px dashed #1A1A2E", color:"#1A1A2E", fontSize:13 }}>+ Ajouter une section</button>
+        <button onClick={()=>{ if(window.confirm("Réinitialiser le modèle par défaut ? Les modifications non enregistrées seront perdues.")) setSecs(JSON.parse(JSON.stringify(DEFAULT_SECS))); }}
+          style={{ ...btn, background:"white", border:"1.5px solid #E0E0E0", color:"#9A9A9A", fontSize:13 }}>↺ Modèle par défaut</button>
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:10, paddingBottom:40 }}>
+        <button onClick={onCancel} style={{ ...btn, background:"white", border:"1.5px solid #E0E0E0", fontSize:13 }}>Annuler</button>
+        <button onClick={save} disabled={saving} style={{ ...btn, background:"#1A1A2E", color:"white", fontSize:13, opacity:saving?.7:1 }}>
+          {saving ? "Enregistrement..." : "💾 Enregistrer le modèle"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
   const [restos, setRestos] = useState([]);
-  const [view, setView] = useState("list");
+  const [secs, setSecs] = useState(null);
+  const [view, setView] = useState("list"); // list | resto | template
   const [currentResto, setCurrentResto] = useState(null);
   const [tab, setTab] = useState("hist");
   const [auditId, setAuditId] = useState(null);
@@ -499,10 +633,21 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     setLoadingRestos(true);
-    dbGet("restaurants", "order=created_at.asc&select=*")
-      .then(rows => setRestos(rows))
-      .catch(() => showToast("Erreur de connexion à la base"))
-      .finally(() => setLoadingRestos(false));
+    Promise.all([
+      dbGet("restaurants", "order=created_at.asc&select=*"),
+      dbGet("settings", "key=eq.template&select=*")
+    ]).then(([restoRows, settingsRows]) => {
+      setRestos(restoRows);
+      if (settingsRows.length && settingsRows[0].value) {
+        setSecs(settingsRows[0].value);
+      } else {
+        setSecs(DEFAULT_SECS);
+        dbUpsert("settings", { key: "template", value: DEFAULT_SECS }, "key").catch(()=>{});
+      }
+    }).catch(() => {
+      showToast("Erreur de connexion à la base");
+      setSecs(DEFAULT_SECS);
+    }).finally(() => setLoadingRestos(false));
   }, [user]);
 
   const addResto = async () => {
@@ -516,6 +661,13 @@ export default function App() {
     } catch(e) { showToast("Erreur : " + e.message); }
   };
 
+  const saveTemplate = async (newSecs) => {
+    await dbUpsert("settings", { key: "template", value: newSecs, updated_at: new Date().toISOString() }, "key");
+    setSecs(newSecs);
+    showToast("Modèle enregistré ✓");
+    setView("list");
+  };
+
   if (!user) return <Login onLogin={setUser} />;
 
   return (
@@ -524,12 +676,15 @@ export default function App() {
       <Toast msg={toast} />
 
       {/* Topbar */}
-      <div style={{ background:"#1A1A2E", color:"#F8F6F1", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+      <div style={{ background:"#1A1A2E", color:"#F8F6F1", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 }}>
         <div onClick={()=>{ setView("list"); setCurrentResto(null); }}
           style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:15, fontWeight:700, textTransform:"uppercase", letterSpacing:.5, cursor:"pointer" }}>
-          {view==="resto" ? "← " : ""}Portail Audit Restaurants
+          {view!=="list" ? "← " : ""}Portail Audit Restaurants
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:14, fontSize:12, color:"#9A9A9A" }}>
+          {view!=="template" && (
+            <span onClick={()=>setView("template")} style={{ color:"#F8F6F1", cursor:"pointer", textDecoration:"underline" }}>⚙️ Modèle d'audit</span>
+          )}
           <span>{LABELS[user]}</span>
           <span onClick={()=>setUser(null)} style={{ color:"#F8F6F1", cursor:"pointer", textDecoration:"underline" }}>Déconnexion</span>
         </div>
@@ -537,6 +692,10 @@ export default function App() {
 
       <div style={{ maxWidth:940, margin:"0 auto", padding:"24px 16px" }}>
 
+        {secs===null ? (
+          <div style={{ textAlign:"center", padding:40, color:"#9A9A9A" }}>Connexion à la base...</div>
+        ) : (
+        <>
         {/* ── LISTE ── */}
         {view==="list" && (
           <>
@@ -594,11 +753,26 @@ export default function App() {
                 restoId={currentResto.id}
                 auditId={auditId}
                 userName={user}
+                secs={secs}
                 onSaved={id=>setAuditId(id)}
                 onBack={()=>{ setAuditId(null); setTab("hist"); }}
               />
             )}
           </>
+        )}
+
+        {/* ── TEMPLATE EDITOR ── */}
+        {view==="template" && (
+          <>
+            <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:17, fontWeight:700, textTransform:"uppercase", letterSpacing:.5, marginBottom:20 }}>Modèle d'audit</div>
+            <TemplateEditor
+              secs={secs}
+              onSave={saveTemplate}
+              onCancel={()=>setView("list")}
+            />
+          </>
+        )}
+        </>
         )}
       </div>
     </div>
