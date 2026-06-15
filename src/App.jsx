@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import jsPDF from "jspdf";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://kcabmieqsqjchfjjxbnj.supabase.co";
@@ -142,6 +144,12 @@ function verdictInfo(s) {
   return { label: "Critique — Action immédiate", bg: "#C8402A" };
 }
 
+function hexToRgb(hex) {
+  const h = hex.replace("#","");
+  const bigint = parseInt(h, 16);
+  return [(bigint>>16)&255, (bigint>>8)&255, bigint&255];
+}
+
 function fDate(d) {
   if (!d) return "—";
   const [y, m, j] = d.split("-"); return `${j}/${m}/${y}`;
@@ -171,6 +179,160 @@ function compressImage(file) {
     };
     r.readAsDataURL(file);
   });
+}
+
+// ── PDF EXPORT ────────────────────────────────────────────────────────────────
+function exportAuditPDF(audit, secs, restoName) {
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = 210, M = 15;
+  let y = 0;
+
+  // Header band
+  doc.setFillColor(15,15,15);
+  doc.rect(0,0,W,30,"F");
+  doc.setTextColor(255,255,255);
+  doc.setFont("helvetica","bold");
+  doc.setFontSize(15);
+  doc.text("AUDIT OPÉRATIONNEL", M, 12);
+  doc.setFontSize(11);
+  doc.setFont("helvetica","normal");
+  doc.text(restoName || "Restaurant", M, 19);
+  doc.setFontSize(9);
+  doc.setTextColor(200,200,200);
+  doc.text(`${fDate(audit.date)} — ${audit.service||"Service non précisé"} — Audité par ${audit.auteur||"—"}`, M, 25);
+
+  y = 40;
+
+  // Score global block
+  const { global, secScores } = calcGlobal(audit.scores, secs);
+  const { label, bg } = verdictInfo(global);
+  const [r,g,b] = hexToRgb(bg);
+  doc.setFillColor(r,g,b);
+  doc.roundedRect(M, y, 38, 22, 2, 2, "F");
+  doc.setTextColor(255,255,255);
+  doc.setFont("helvetica","bold");
+  doc.setFontSize(20);
+  doc.text(global!==null?`${global}%`:"–", M+19, y+14, {align:"center"});
+
+  doc.setTextColor(0,0,0);
+  doc.setFontSize(13);
+  doc.text("Score Global", M+46, y+8);
+  doc.setFillColor(r,g,b);
+  doc.roundedRect(M+46, y+11, 38, 7, 1, 1, "F");
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(9);
+  doc.setFont("helvetica","bold");
+  doc.text(label, M+65, y+15.5, {align:"center"});
+  doc.setTextColor(0,0,0);
+  doc.setFont("helvetica","normal");
+
+  y += 32;
+
+  // Section scores
+  doc.setFont("helvetica","bold");
+  doc.setFontSize(11);
+  doc.text("Scores par section", M, y);
+  y += 7;
+  doc.setFont("helvetica","normal");
+  doc.setFontSize(9);
+
+  secs.forEach(sec => {
+    const pct = secScores[sec.id];
+    const col = scoreColor(pct);
+    const [rr,gg,bb] = hexToRgb(col);
+    doc.setFillColor(rr,gg,bb);
+    doc.rect(M, y-3.2, 6, 4.2, "F");
+    doc.text(`${sec.t}  (poids ${sec.p}%)`, M+9, y);
+    doc.setFont("helvetica","bold");
+    doc.text(pct!==null?`${pct}%`:"–", W-M, y, {align:"right"});
+    doc.setFont("helvetica","normal");
+    y += 6;
+    if (y > 275) { doc.addPage(); y = M; }
+  });
+
+  y += 4;
+
+  // Points critiques / observations (notes 0-1)
+  const criticalRows = [];
+  secs.forEach(sec => sec.cr.forEach(c => {
+    const s = audit.scores[c.id];
+    if (s && !s.na && s.note !== null && s.note <= 1) {
+      criticalRows.push({ label: c.l, note: s.note, cmt: s.cmt || "" });
+    }
+  }));
+
+  if (criticalRows.length) {
+    if (y > 250) { doc.addPage(); y = M; }
+    doc.setFont("helvetica","bold");
+    doc.setFontSize(11);
+    doc.text("Points nécessitant une action (notes 0-1)", M, y);
+    y += 7;
+    doc.setFontSize(9);
+    criticalRows.forEach(row => {
+      if (y > 275) { doc.addPage(); y = M; }
+      const col = row.note === 0 ? [200,64,42] : [224,123,42];
+      doc.setFillColor(...col);
+      doc.circle(M+1.5, y-1, 1.5, "F");
+      doc.setFont("helvetica","bold");
+      doc.text(`[${row.note}]`, M+5, y);
+      doc.setFont("helvetica","normal");
+      const lines = doc.splitTextToSize(row.label, W - 2*M - 10);
+      doc.text(lines, M+12, y);
+      y += lines.length * 4.5;
+      if (row.cmt) {
+        doc.setTextColor(110,110,110);
+        doc.setFont("helvetica","italic");
+        const cl = doc.splitTextToSize("→ " + row.cmt, W - 2*M - 14);
+        if (y > 275) { doc.addPage(); y = M; }
+        doc.text(cl, M+14, y);
+        y += cl.length * 4.5;
+        doc.setTextColor(0,0,0);
+        doc.setFont("helvetica","normal");
+      }
+      y += 2;
+    });
+    y += 4;
+  }
+
+  // Text blocks
+  const addTextBlock = (title, text) => {
+    if (!text || !text.trim()) return;
+    if (y > 260) { doc.addPage(); y = M; }
+    doc.setFont("helvetica","bold"); doc.setFontSize(11);
+    doc.text(title, M, y); y += 6;
+    doc.setFont("helvetica","normal"); doc.setFontSize(9);
+    const lines = doc.splitTextToSize(text, W-2*M);
+    lines.forEach(line => {
+      if (y > 280) { doc.addPage(); y = M; }
+      doc.text(line, M, y); y += 4.5;
+    });
+    y += 5;
+  };
+  addTextBlock("🔴 Points critiques à remonter", audit.points_critiques);
+  addTextBlock("✅ Points forts constatés", audit.points_forts);
+  addTextBlock("📋 Plan d'action immédiat", audit.plan_action);
+
+  // Photos
+  const photos = audit.photos || [];
+  if (photos.length) {
+    photos.forEach((p, idx) => {
+      doc.addPage();
+      doc.setFont("helvetica","bold");
+      doc.setFontSize(10);
+      doc.text(`Photo ${idx+1} / ${photos.length}`, M, M-3);
+      try {
+        const props = doc.getImageProperties(p.data);
+        const imgW = W - 2*M;
+        const imgH = Math.min(imgW * props.height / props.width, 260);
+        doc.addImage(p.data, "JPEG", M, M, imgW, imgH);
+      } catch(e) {
+        doc.text("(image illisible)", M, M+10);
+      }
+    });
+  }
+
+  const safeName = (restoName||"restaurant").replace(/[^a-z0-9]+/gi,"_");
+  doc.save(`audit_${safeName}_${audit.date||"sans-date"}.pdf`);
 }
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
@@ -451,13 +613,13 @@ function AuditForm({ restoId, auditId, userName, secs, onSaved, onBack }) {
 }
 
 // ── HISTORY ───────────────────────────────────────────────────────────────────
-function History({ restoId, onOpen, onNew }) {
+function History({ restoId, restoName, secs, onOpen, onNew }) {
   const [audits, setAudits] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const rows = await dbGet("audits", `restaurant_id=eq.${restoId}&order=date.desc,created_at.desc&select=id,date,service,auteur,score_global,photos,created_at`);
+        const rows = await dbGet("audits", `restaurant_id=eq.${restoId}&order=date.desc,created_at.desc&select=*`);
         setAudits(rows);
       } catch(e) { setAudits([]); }
     })();
@@ -476,21 +638,183 @@ function History({ restoId, onOpen, onNew }) {
       {audits.map(a => {
         const col = scoreColor(a.score_global);
         return (
-          <div key={a.id} onClick={()=>onOpen(a.id)}
-            style={{ display:"flex", alignItems:"center", gap:14, padding:"13px 16px", border:"1px solid #E8E8E8", borderRadius:4, marginBottom:8, cursor:"pointer", background:"white", transition:"border-color .15s" }}
+          <div key={a.id}
+            style={{ display:"flex", alignItems:"center", gap:14, padding:"13px 16px", border:"1px solid #E8E8E8", borderRadius:4, marginBottom:8, background:"white", transition:"border-color .15s" }}
             onMouseEnter={e=>e.currentTarget.style.borderColor="#1A1A2E"}
             onMouseLeave={e=>e.currentTarget.style.borderColor="#E8E8E8"}>
-            <div style={{ background:col, color:"white", borderRadius:3, padding:"4px 10px", minWidth:50, textAlign:"center", fontWeight:700, fontSize:13, fontFamily:"'Space Grotesk',sans-serif" }}>
+            <div onClick={()=>onOpen(a.id)} style={{ cursor:"pointer", background:col, color:"white", borderRadius:3, padding:"4px 10px", minWidth:50, textAlign:"center", fontWeight:700, fontSize:13, fontFamily:"'Space Grotesk',sans-serif" }}>
               {a.score_global!==null ? a.score_global+"%" : "–"}
             </div>
-            <div style={{ flex:1 }}>
+            <div onClick={()=>onOpen(a.id)} style={{ flex:1, cursor:"pointer" }}>
               <div style={{ fontSize:13, fontWeight:600 }}>{fDate(a.date)} — {a.service || "Service non précisé"}</div>
               <div style={{ fontSize:11, color:"#9A9A9A", marginTop:2 }}>Par {a.auteur || "?"} · {fDT(a.created_at)}</div>
             </div>
-            <div style={{ fontSize:11, color:"#9A9A9A", flexShrink:0 }}>{(a.photos||[]).length} photo(s)</div>
+            <div onClick={()=>onOpen(a.id)} style={{ cursor:"pointer", fontSize:11, color:"#9A9A9A", flexShrink:0 }}>{(a.photos||[]).length} photo(s)</div>
+            <button onClick={(e)=>{ e.stopPropagation(); exportAuditPDF(a, secs, restoName); }}
+              style={{ ...btn, background:"#F5F3EE", border:"1px solid #E0E0E0", color:"#1A1A2E", fontSize:11, padding:"7px 12px", flexShrink:0 }}>
+              📄 PDF
+            </button>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── EVOLUTION ─────────────────────────────────────────────────────────────────
+const SECTION_COLORS = ["#C8402A","#2A7A4B","#2A5E7A","#E07B2A","#9A5BC8","#5BA3A3","#C88A2A","#8A2A6E"];
+
+function Evolution({ restoId, restos, secs }) {
+  const [audits, setAudits] = useState(null);
+  const [networkLatest, setNetworkLatest] = useState(null); // { secId: avgPct }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await dbGet("audits", `restaurant_id=eq.${restoId}&order=date.asc,created_at.asc&select=id,date,scores,score_global`);
+        setAudits(rows);
+      } catch(e) { setAudits([]); }
+    })();
+  }, [restoId]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        // Pour chaque restaurant, récupérer son audit le plus récent
+        const results = {};
+        for (const sec of secs) results[sec.id] = [];
+        for (const r of restos) {
+          const rows = await dbGet("audits", `restaurant_id=eq.${r.id}&order=date.desc,created_at.desc&limit=1&select=scores`);
+          if (rows.length) {
+            const { secScores } = calcGlobal(rows[0].scores, secs);
+            secs.forEach(sec => {
+              if (secScores[sec.id] !== null) results[sec.id].push(secScores[sec.id]);
+            });
+          }
+        }
+        const avgs = {};
+        secs.forEach(sec => {
+          const arr = results[sec.id];
+          avgs[sec.id] = arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
+        });
+        setNetworkLatest(avgs);
+      } catch(e) { setNetworkLatest(null); }
+    })();
+  }, [restos, secs]);
+
+  if (audits === null) return <div style={{ textAlign:"center", padding:50, color:"#9A9A9A" }}>Chargement...</div>;
+  if (!audits.length) return (
+    <div style={{ textAlign:"center", padding:50, color:"#9A9A9A" }}>
+      Aucun audit enregistré encore. La vue Évolution s'affichera dès le premier audit complété.
+    </div>
+  );
+
+  // Build chart data
+  const chartData = audits.map(a => {
+    const { global, secScores } = calcGlobal(a.scores, secs);
+    const row = { date: fDate(a.date), global };
+    secs.forEach(sec => { row[sec.id] = secScores[sec.id]; });
+    return row;
+  });
+
+  // Latest scores per section + trend
+  const last = chartData[chartData.length - 1];
+  const prev = chartData.length >= 2 ? chartData[chartData.length - 2] : null;
+
+  const rows = secs.map(sec => {
+    const latestVal = last[sec.id];
+    const prevVal = prev ? prev[sec.id] : null;
+    let trend = "—", trendColor = "#9A9A9A";
+    if (latestVal !== null && prevVal !== null) {
+      const diff = latestVal - prevVal;
+      if (diff >= 3) { trend = `↑ +${diff}`; trendColor = "#2A7A4B"; }
+      else if (diff <= -3) { trend = `↓ ${diff}`; trendColor = "#C8402A"; }
+      else { trend = "→ stable"; trendColor = "#9A9A9A"; }
+    }
+    const netAvg = networkLatest ? networkLatest[sec.id] : null;
+    let vsNet = null, vsNetColor = "#9A9A9A";
+    if (latestVal !== null && netAvg !== null) {
+      vsNet = latestVal - netAvg;
+      vsNetColor = vsNet > 0 ? "#2A7A4B" : vsNet < 0 ? "#C8402A" : "#9A9A9A";
+    }
+    return { sec, latestVal, trend, trendColor, netAvg, vsNet, vsNetColor };
+  }).sort((a,b) => {
+    if (a.latestVal === null) return 1;
+    if (b.latestVal === null) return -1;
+    return a.latestVal - b.latestVal; // pires en premier
+  });
+
+  return (
+    <div>
+      {/* Global score over time */}
+      <div style={{ border:"1px solid #E8E8E8", borderRadius:4, padding:"16px 18px", marginBottom:18, background:"white" }}>
+        <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:12, fontWeight:700, textTransform:"uppercase", letterSpacing:.4, marginBottom:14 }}>Score global dans le temps</div>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={chartData} margin={{ top:5, right:20, left:-15, bottom:5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+            <XAxis dataKey="date" tick={{ fontSize:11 }} />
+            <YAxis domain={[0,100]} tick={{ fontSize:11 }} />
+            <Tooltip formatter={(v)=>v!==null?`${v}%`:"–"} />
+            <Line type="monotone" dataKey="global" name="Score global" stroke="#1A1A2E" strokeWidth={3} dot={{ r:4 }} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Per section over time */}
+      <div style={{ border:"1px solid #E8E8E8", borderRadius:4, padding:"16px 18px", marginBottom:18, background:"white" }}>
+        <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:12, fontWeight:700, textTransform:"uppercase", letterSpacing:.4, marginBottom:14 }}>Évolution par section</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <LineChart data={chartData} margin={{ top:5, right:20, left:-15, bottom:5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+            <XAxis dataKey="date" tick={{ fontSize:11 }} />
+            <YAxis domain={[0,100]} tick={{ fontSize:11 }} />
+            <Tooltip formatter={(v)=>v!==null?`${v}%`:"–"} />
+            <Legend wrapperStyle={{ fontSize:11 }} />
+            {secs.map((sec, i) => (
+              <Line key={sec.id} type="monotone" dataKey={sec.id} name={sec.t} stroke={SECTION_COLORS[i % SECTION_COLORS.length]} strokeWidth={2} dot={{ r:3 }} connectNulls />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Forces / Faiblesses table */}
+      <div style={{ border:"1px solid #E8E8E8", borderRadius:4, overflow:"hidden", marginBottom:30, background:"white" }}>
+        <div style={{ background:"#F5F3EE", padding:"12px 18px", fontFamily:"'Space Grotesk',sans-serif", fontSize:12, fontWeight:700, textTransform:"uppercase", letterSpacing:.4 }}>
+          Forces & Faiblesses — dernier audit
+        </div>
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+            <thead>
+              <tr style={{ borderBottom:"1px solid #E8E8E8" }}>
+                <th style={{ textAlign:"left", padding:"10px 16px", color:"#9A9A9A", fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:.4 }}>Section</th>
+                <th style={{ textAlign:"center", padding:"10px 12px", color:"#9A9A9A", fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:.4 }}>Score actuel</th>
+                <th style={{ textAlign:"center", padding:"10px 12px", color:"#9A9A9A", fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:.4 }}>Évolution</th>
+                <th style={{ textAlign:"center", padding:"10px 16px", color:"#9A9A9A", fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:.4 }}>vs Moyenne réseau</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ sec, latestVal, trend, trendColor, netAvg, vsNet, vsNetColor }) => (
+                <tr key={sec.id} style={{ borderBottom:"1px solid #F5F3EE" }}>
+                  <td style={{ padding:"10px 16px" }}>{sec.t}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"center" }}>
+                    <span style={{ display:"inline-block", minWidth:42, padding:"3px 8px", borderRadius:3, background:scoreColor(latestVal), color:"white", fontWeight:700, fontFamily:"'Space Grotesk',sans-serif", fontSize:12 }}>
+                      {latestVal!==null?`${latestVal}%`:"–"}
+                    </span>
+                  </td>
+                  <td style={{ padding:"10px 12px", textAlign:"center", color:trendColor, fontWeight:600 }}>{trend}</td>
+                  <td style={{ padding:"10px 16px", textAlign:"center", color:vsNetColor, fontWeight:600 }}>
+                    {vsNet!==null ? `${vsNet>0?"+":""}${vsNet} pts` : (netAvg===null ? "—" : "n/a")}
+                    {netAvg!==null && <span style={{ color:"#9A9A9A", fontWeight:400, marginLeft:6 }}>(moy. {netAvg}%)</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding:"10px 16px", fontSize:10.5, color:"#9A9A9A", borderTop:"1px solid #F5F3EE" }}>
+          La moyenne réseau est calculée à partir du dernier audit disponible de chaque restaurant. Le tableau est trié du score le plus faible au plus élevé pour prioriser les actions.
+        </div>
+      </div>
     </div>
   );
 }
@@ -621,7 +945,7 @@ export default function App() {
   const [secs, setSecs] = useState(null);
   const [view, setView] = useState("list"); // list | resto | template
   const [currentResto, setCurrentResto] = useState(null);
-  const [tab, setTab] = useState("hist");
+  const [tab, setTab] = useState("hist"); // hist | form | evol
   const [auditId, setAuditId] = useState(null);
   const [addName, setAddName] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -690,7 +1014,7 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ maxWidth:940, margin:"0 auto", padding:"24px 16px" }}>
+      <div style={{ maxWidth:980, margin:"0 auto", padding:"24px 16px" }}>
 
         {secs===null ? (
           <div style={{ textAlign:"center", padding:40, color:"#9A9A9A" }}>Connexion à la base...</div>
@@ -737,8 +1061,8 @@ export default function App() {
         {view==="resto" && currentResto && (
           <>
             <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:17, fontWeight:700, textTransform:"uppercase", letterSpacing:.5, marginBottom:16 }}>{currentResto.name}</div>
-            <div style={{ display:"flex", gap:4, borderBottom:"2px solid #E8E8E8", marginBottom:20 }}>
-              {[["hist","Historique"],["form","Nouvel audit"]].map(([key,label])=>(
+            <div style={{ display:"flex", gap:4, borderBottom:"2px solid #E8E8E8", marginBottom:20, flexWrap:"wrap" }}>
+              {[["hist","Historique"],["form","Nouvel audit"],["evol","Évolution"]].map(([key,label])=>(
                 <button key={key} onClick={()=>{ setTab(key); if(key==="form") setAuditId(null); }}
                   style={{ padding:"10px 18px", fontSize:12, fontWeight:700, cursor:"pointer", border:"none", background:"none", color:tab===key?"#1A1A2E":"#9A9A9A", borderBottom:`2px solid ${tab===key?"#C8402A":"transparent"}`, marginBottom:-2, textTransform:"uppercase", letterSpacing:.5 }}>
                   {label}
@@ -746,7 +1070,7 @@ export default function App() {
               ))}
             </div>
             {tab==="hist" && (
-              <History restoId={currentResto.id} onOpen={id=>{ setAuditId(id); setTab("form"); }} onNew={()=>{ setAuditId(null); setTab("form"); }} />
+              <History restoId={currentResto.id} restoName={currentResto.name} secs={secs} onOpen={id=>{ setAuditId(id); setTab("form"); }} onNew={()=>{ setAuditId(null); setTab("form"); }} />
             )}
             {tab==="form" && (
               <AuditForm
@@ -757,6 +1081,9 @@ export default function App() {
                 onSaved={id=>setAuditId(id)}
                 onBack={()=>{ setAuditId(null); setTab("hist"); }}
               />
+            )}
+            {tab==="evol" && (
+              <Evolution restoId={currentResto.id} restos={restos} secs={secs} />
             )}
           </>
         )}
