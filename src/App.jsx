@@ -198,29 +198,49 @@ async function exportAuditReport(contentEl, photos, filename) {
     heightLeft -= pageH;
   }
 
-  // Photos en pleine page
-  (photos || []).forEach((p, idx) => {
-    pdf.addPage();
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(10);
-    pdf.setTextColor(0, 0, 0);
-    pdf.text(`Photo ${idx + 1} / ${photos.length}`, 15, 12);
-    try {
-      const props = pdf.getImageProperties(p.data);
-      const maxW = pageW - 30;
-      const maxH = pageH - 30;
-      let w = maxW, h = (maxW * props.height) / props.width;
-      if (h > maxH) { h = maxH; w = (maxH * props.width) / props.height; }
-      const x = (pageW - w) / 2;
-      pdf.addImage(p.data, "JPEG", x, 18, w, h);
-    } catch (e) { /* image illisible, on passe */ }
-  });
+  // Photos en grille (6 par page, ~1/3 de la taille pleine page)
+  const photoList = photos || [];
+  if (photoList.length) {
+    const margin = 15, gap = 8, cols = 2, rowsPerPage = 3, perPage = cols * rowsPerPage;
+    const cellW = (pageW - 2 * margin - (cols - 1) * gap) / cols;
+    const cellH = (pageH - 2 * margin - (rowsPerPage - 1) * gap) / rowsPerPage;
+
+    photoList.forEach((p, idx) => {
+      const posInPage = idx % perPage;
+      if (posInPage === 0) {
+        pdf.addPage();
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text("Photos de l'audit", margin, 10);
+      }
+      const row = Math.floor(posInPage / cols);
+      const col = posInPage % cols;
+      const cellX = margin + col * (cellW + gap);
+      const cellY = margin + row * (cellH + gap);
+
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(8);
+      pdf.setTextColor(120, 120, 120);
+      pdf.text(`Photo ${idx + 1} / ${photoList.length}`, cellX, cellY + 4);
+
+      try {
+        const props = pdf.getImageProperties(p.data);
+        const availH = cellH - 8;
+        let w = cellW, h = (cellW * props.height) / props.width;
+        if (h > availH) { h = availH; w = (availH * props.width) / props.height; }
+        const x = cellX + (cellW - w) / 2;
+        const y = cellY + 6 + (availH - h) / 2;
+        pdf.addImage(p.data, "JPEG", x, y, w, h);
+      } catch (e) { /* image illisible, on passe */ }
+    });
+  }
 
   pdf.save(filename);
 }
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
-const inp = { width: "100%", padding: "9px 11px", border: "1.5px solid #E0E0E0", borderRadius: 3, fontFamily: "inherit", fontSize: 13, outline: "none", background: "white" };
+const inp = { width: "100%", boxSizing: "border-box", padding: "9px 11px", border: "1.5px solid #E0E0E0", borderRadius: 3, fontFamily: "inherit", fontSize: 13, outline: "none", background: "white" };
 const btn = { border: "none", borderRadius: 3, cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: 13, padding: "10px 18px" };
 const lbl = { display: "block", fontSize: 10, textTransform: "uppercase", letterSpacing: ".8px", color: "#9A9A9A", marginBottom: 4 };
 
@@ -462,12 +482,10 @@ function AuditForm({ restoId, restoName, auditId, userName, secs, onSaved, onBac
               return (
                 <div key={cr.id} style={{ display:"grid", gridTemplateColumns:"26px 1fr auto", alignItems:"start", gap:10, padding:"10px 16px", borderBottom:ci<sec.cr.length-1?"1px solid #F0F0F0":"none", background:"white" }}>
                   <div style={{ fontSize:10, color:"#9A9A9A", paddingTop:6 }}>{si+1}.{ci+1}</div>
-                  <div>
+                  <div style={{ minWidth:0 }}>
                     <div style={{ fontSize:12.5, lineHeight:1.45 }}>{cr.l}</div>
                     {cr.d && <div style={{ fontSize:10.5, color:"#9A9A9A", marginTop:2 }}>{cr.d}</div>}
-                    {s.note!==null && s.note<=1 && (
-                      <input type="text" value={s.cmt} onChange={e=>setCmt(cr.id,e.target.value)} placeholder="Observation..." style={{ ...inp, marginTop:6, fontSize:12, padding:"5px 9px" }} />
-                    )}
+                    <input type="text" value={s.cmt} onChange={e=>setCmt(cr.id,e.target.value)} placeholder="Observation (optionnel)..." style={{ ...inp, marginTop:6, fontSize:12, padding:"5px 9px" }} />
                   </div>
                   <div style={{ display:"flex", alignItems:"center", gap:3, paddingTop:4, flexShrink:0 }}>
                     {[0,1,2,3].map(n => {
@@ -511,7 +529,7 @@ function AuditForm({ restoId, restoName, auditId, userName, secs, onSaved, onBac
               </div>
             ))}
           </div>
-          {photos.length > 0 && <div style={{ fontSize:10.5, color:"#9A9A9A", marginTop:8 }}>Ces photos seront ajoutées en pleine page à la fin du PDF exporté.</div>}
+          {photos.length > 0 && <div style={{ fontSize:10.5, color:"#9A9A9A", marginTop:8 }}>Ces photos seront ajoutées en grille (6 par page) à la fin du PDF exporté.</div>}
         </div>
       </div>
 
