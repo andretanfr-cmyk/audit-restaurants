@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
@@ -241,6 +241,7 @@ async function exportAuditReport(contentEl, photos, filename) {
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
 const inp = { width: "100%", boxSizing: "border-box", padding: "9px 11px", border: "1.5px solid #E0E0E0", borderRadius: 3, fontFamily: "inherit", fontSize: 13, outline: "none", background: "white" };
+const AUTO_RESIZE_TA = (el) => { if (!el) return; el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
 const btn = { border: "none", borderRadius: 3, cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: 13, padding: "10px 18px" };
 const lbl = { display: "block", fontSize: 10, textTransform: "uppercase", letterSpacing: ".8px", color: "#9A9A9A", marginBottom: 4 };
 
@@ -307,7 +308,7 @@ function ScoreHeader({ SC, secs }) {
   const circ = 238.76;
   const { label, bg } = verdictInfo(global);
   return (
-    <div style={{ background:"#0F0F0F", color:"#F8F6F1", padding:"18px 22px", borderRadius:5, marginBottom:20, borderBottom:"3px solid #C8402A", display:"flex", alignItems:"center", gap:24, flexWrap:"wrap" }}>
+    <div className="score-hd" style={{ background:"#0F0F0F", color:"#F8F6F1", padding:"18px 22px", borderRadius:5, marginBottom:20, borderBottom:"3px solid #C8402A", display:"flex", alignItems:"center", gap:24, flexWrap:"wrap" }}>
       <div style={{ position:"relative", width:76, height:76, flexShrink:0 }}>
         <svg width="76" height="76" viewBox="0 0 90 90" style={{ transform:"rotate(-90deg)" }}>
           <circle cx="45" cy="45" r="38" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="6"/>
@@ -323,7 +324,7 @@ function ScoreHeader({ SC, secs }) {
         <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:14, fontWeight:700, marginBottom:7 }}>Score Global</div>
         <span style={{ display:"inline-block", background:bg, padding:"4px 12px", borderRadius:2, fontSize:11, fontWeight:600, letterSpacing:".8px", textTransform:"uppercase" }}>{label}</span>
       </div>
-      <div style={{ flex:1, minWidth:200, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"7px 16px" }}>
+      <div className="score-barres" style={{ flex:1, minWidth:200, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"7px 16px" }}>
         {secs.map(sec => {
           const pct = secScores[sec.id];
           const c = scoreColor(pct);
@@ -460,7 +461,7 @@ function AuditForm({ restoId, restoName, auditId, userName, secs, onSaved, onBac
       {/* ── Contenu capturé pour le PDF ── */}
       <div ref={pdfRef} style={{ background:"#F8F6F1" }}>
         {/* Meta */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px 20px", marginBottom:20 }}>
+        <div className="meta-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px 20px", marginBottom:20 }}>
           <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inp} /></div>
           <div><label style={lbl}>Service</label><input type="text" value={service} onChange={e=>setService(e.target.value)} placeholder="Déj / Dîner / Continu" style={inp} /></div>
         </div>
@@ -480,14 +481,23 @@ function AuditForm({ restoId, restoName, auditId, userName, secs, onSaved, onBac
               const s = SC[cr.id] || { note:null, na:false, flag:false, cmt:"" };
               const noteColors = ["#C8402A","#E07B2A","#D4A020","#2A7A4B"];
               return (
-                <div key={cr.id} style={{ display:"grid", gridTemplateColumns:"26px 1fr auto", alignItems:"start", gap:10, padding:"10px 16px", borderBottom:ci<sec.cr.length-1?"1px solid #F0F0F0":"none", background:"white" }}>
-                  <div style={{ fontSize:10, color:"#9A9A9A", paddingTop:6 }}>{si+1}.{ci+1}</div>
-                  <div style={{ minWidth:0 }}>
-                    <div style={{ fontSize:12.5, lineHeight:1.45 }}>{cr.l}</div>
-                    {cr.d && <div style={{ fontSize:10.5, color:"#9A9A9A", marginTop:2 }}>{cr.d}</div>}
-                    <input type="text" value={s.cmt} onChange={e=>setCmt(cr.id,e.target.value)} placeholder="Observation (optionnel)..." style={{ ...inp, marginTop:6, fontSize:12, padding:"5px 9px" }} />
+                <div key={cr.id} style={{ padding:"10px 16px", borderBottom:ci<sec.cr.length-1?"1px solid #F0F0F0":"none", background:"white" }}>
+                  <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+                    <div className="cr-num" style={{ fontSize:10, color:"#9A9A9A", paddingTop:4, flexShrink:0, minWidth:22 }}>{si+1}.{ci+1}</div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12.5, lineHeight:1.45 }}>{cr.l}</div>
+                      {cr.d && <div style={{ fontSize:10.5, color:"#9A9A9A", marginTop:2 }}>{cr.d}</div>}
+                      <textarea
+                        value={s.cmt}
+                        onChange={e=>{ setCmt(cr.id,e.target.value); AUTO_RESIZE_TA(e.target); }}
+                        onFocus={e=>AUTO_RESIZE_TA(e.target)}
+                        placeholder="Observation (optionnel)..."
+                        rows={1}
+                        style={{ ...inp, marginTop:6, fontSize:12, padding:"6px 9px", resize:"none", overflow:"hidden", lineHeight:1.5, display:"block" }}
+                      />
+                    </div>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:3, paddingTop:4, flexShrink:0 }}>
+                  <div className="cr-controls" style={{ display:"flex", alignItems:"center", gap:3, marginTop:8, flexWrap:"wrap" }}>
                     {[0,1,2,3].map(n => {
                       const active = !s.na && s.note===n;
                       return <button key={n} onClick={()=>setN(cr.id,n)} style={{ width:29, height:29, border:`1.5px solid ${active?noteColors[n]:"#E0E0E0"}`, background:active?noteColors[n]:"white", borderRadius:3, cursor:"pointer", fontSize:11, fontWeight:700, color:active?"white":"#9A9A9A" }}>{n}</button>;
@@ -534,13 +544,13 @@ function AuditForm({ restoId, restoName, auditId, userName, secs, onSaved, onBac
       </div>
 
       {/* Footer */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingBottom:40, flexWrap:"wrap", gap:12 }}>
+      <div className="form-foot" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingBottom:40, flexWrap:"wrap", gap:12 }}>
         <div style={{ display:"flex", gap:12, flexWrap:"wrap", fontSize:11, color:"#9A9A9A" }}>
           {[["#2A7A4B","Conforme (3)"],["#D4A020","À améliorer (2)"],["#E07B2A","Non-conforme (1)"],["#C8402A","Critique (0)"]].map(([c,l])=>(
             <div key={l} style={{ display:"flex", alignItems:"center", gap:5 }}><div style={{ width:10, height:10, borderRadius:2, background:c }}/>{l}</div>
           ))}
         </div>
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+        <div className="form-foot-btns" style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           {auditId && <button onClick={del} style={{ ...btn, background:"#C8402A", color:"white", fontSize:12, padding:"8px 14px" }}>🗑 Supprimer</button>}
           <button onClick={doExport} disabled={exporting} style={{ ...btn, background:"#F5F3EE", border:"1px solid #E0E0E0", color:"#1A1A2E", fontSize:12, padding:"8px 14px", opacity:exporting?.7:1 }}>
             {exporting ? "Génération..." : "📄 Exporter en PDF"}
@@ -938,10 +948,27 @@ export default function App() {
   return (
     <div style={{ minHeight:"100vh", background:"#F8F6F1", fontFamily:"Inter,sans-serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; }
+        input, textarea, select { box-sizing: border-box; }
+        @media (max-width: 600px) {
+          .meta-grid { grid-template-columns: 1fr !important; }
+          .score-hd { flex-direction: column !important; align-items: flex-start !important; }
+          .score-barres { grid-template-columns: 1fr !important; min-width: unset !important; }
+          .cr-row { grid-template-columns: 1fr !important; }
+          .cr-num { display: none !important; }
+          .cr-controls { margin-top: 8px !important; flex-wrap: wrap !important; }
+          .form-foot { flex-direction: column !important; align-items: stretch !important; }
+          .form-foot-btns { flex-direction: column !important; }
+          .tabs-row { overflow-x: auto !important; }
+          .resto-grid { grid-template-columns: 1fr 1fr !important; }
+        }
+      `}</style>
       <Toast msg={toast} />
 
       {/* Topbar */}
-      <div style={{ background:"#1A1A2E", color:"#F8F6F1", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 }}>
+      <div style={{ background:"#1A1A2E", color:"#F8F6F1", padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
         <div onClick={()=>{ setView("list"); setCurrentResto(null); }}
           style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:15, fontWeight:700, textTransform:"uppercase", letterSpacing:.5, cursor:"pointer" }}>
           {view!=="list" ? "← " : ""}Portail Audit Restaurants
@@ -955,7 +982,7 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ maxWidth:980, margin:"0 auto", padding:"24px 16px" }}>
+      <div style={{ maxWidth:980, margin:"0 auto", padding:"16px 12px" }}>
 
         {secs===null ? (
           <div style={{ textAlign:"center", padding:40, color:"#9A9A9A" }}>Connexion à la base...</div>
@@ -968,7 +995,7 @@ export default function App() {
             {loadingRestos ? (
               <div style={{ textAlign:"center", padding:40, color:"#9A9A9A" }}>Connexion à la base...</div>
             ) : (
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))", gap:14, marginBottom:16 }}>
+              <div className="resto-grid" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))", gap:14, marginBottom:16 }}>
                 {restos.map(r => (
                   <div key={r.id} onClick={()=>{ setCurrentResto(r); setView("resto"); setTab("hist"); setAuditId(null); }}
                     style={{ border:"1.5px solid #E8E8E8", borderRadius:5, padding:18, cursor:"pointer", background:"white", transition:"all .15s" }}
@@ -1002,7 +1029,7 @@ export default function App() {
         {view==="resto" && currentResto && (
           <>
             <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:17, fontWeight:700, textTransform:"uppercase", letterSpacing:.5, marginBottom:16 }}>{currentResto.name}</div>
-            <div style={{ display:"flex", gap:4, borderBottom:"2px solid #E8E8E8", marginBottom:20, flexWrap:"wrap" }}>
+            <div className="tabs-row" style={{ display:"flex", gap:4, borderBottom:"2px solid #E8E8E8", marginBottom:20, flexWrap:"wrap" }}>
               {[["hist","Historique"],["form","Nouvel audit"],["evol","Évolution"]].map(([key,label])=>(
                 <button key={key} onClick={()=>{ setTab(key); if(key==="form") setAuditId(null); }}
                   style={{ padding:"10px 18px", fontSize:12, fontWeight:700, cursor:"pointer", border:"none", background:"none", color:tab===key?"#1A1A2E":"#9A9A9A", borderBottom:`2px solid ${tab===key?"#C8402A":"transparent"}`, marginBottom:-2, textTransform:"uppercase", letterSpacing:.5 }}>
